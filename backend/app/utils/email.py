@@ -74,7 +74,7 @@ def _construir_mensaje(
     return mensaje
 
 
-def _conectar_smtp_ipv4(host: str, port: int, timeout: int) -> smtplib.SMTP:
+def _conectar_smtp_ipv4(host: str, port: int, timeout: int, seguro: bool) -> smtplib.SMTP:
     """Conecta al servidor SMTP forzando resolución IPv4.
 
     Algunas plataformas de hosting (Railway incluida) no tienen salida a
@@ -83,16 +83,24 @@ def _conectar_smtp_ipv4(host: str, port: int, timeout: int) -> smtplib.SMTP:
     host normalmente, a veces elige la dirección IPv6 y la conexión falla con
     "Network is unreachable" aunque las credenciales estén perfectas.
     Resolviendo nosotros mismos solo la dirección IPv4 evitamos ese problema.
+
+    `seguro=True` usa SSL implícito (el que normalmente va en el puerto 465)
+    en vez de STARTTLS (puerto 587). Se controla con la variable de entorno
+    SMTP_SECURE — sirve para probar el puerto 465 si el 587 queda bloqueado
+    o "colgado" (timeout) en la plataforma donde corre el backend.
     """
     direccion_ipv4 = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
-    servidor = smtplib.SMTP(timeout=timeout)
+    servidor = smtplib.SMTP_SSL(timeout=timeout) if seguro else smtplib.SMTP(timeout=timeout)
     servidor.connect(direccion_ipv4[0], direccion_ipv4[1])
     return servidor
 
 
 def _enviar(mensaje: MIMEMultipart, destinatario: str, timeout: int = 15) -> None:
-    with _conectar_smtp_ipv4(settings.SMTP_HOST, settings.SMTP_PORT, timeout) as server:
-        server.starttls()
+    with _conectar_smtp_ipv4(
+        settings.SMTP_HOST, settings.SMTP_PORT, timeout, settings.SMTP_SECURE
+    ) as server:
+        if not settings.SMTP_SECURE:
+            server.starttls()
         server.login(settings.SMTP_USER, settings.SMTP_PASS)
         server.sendmail(settings.SMTP_USER, [destinatario], mensaje.as_string())
 
