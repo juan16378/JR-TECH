@@ -1,0 +1,7 @@
+# Dependencias opcionales, solo necesarias para correr test_e2e.py
+# (prueba automática que simula toda la API con una base de datos en
+# memoria, sin necesitar conexión a Atlas). No hacen falta para correr
+# el servidor normalmente.
+httpx
+mongomock
+mongomock_motor

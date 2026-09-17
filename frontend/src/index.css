@@ -1,0 +1,112 @@
+@import "tailwindcss";
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* Misma barra de scroll delgada y cian que el sidebar de los paneles
+     (ver .scroll-panel más abajo), aplicada aquí a la página completa
+     porque el contenido de Admin/Empleado/Cliente se desplaza con el
+     scroll normal del documento, no con uno propio. */
+  scrollbar-width: thin;
+  scrollbar-color: rgba(34, 211, 238, 0.35) transparent;
+}
+
+html::-webkit-scrollbar {
+  width: 8px;
+}
+
+html::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+html::-webkit-scrollbar-thumb {
+  background-color: rgba(34, 211, 238, 0.35);
+  border-radius: 999px;
+}
+
+html::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(34, 211, 238, 0.55);
+}
+
+body {
+  margin: 0;
+  font-family: Arial, Helvetica, sans-serif;
+  background: #f8fafc;
+}
+
+button,
+input,
+select {
+  font-family: inherit;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fillBar {
+  from {
+    width: 0%;
+  }
+  to {
+    width: 100%;
+  }
+}
+
+/* Panel lateral del hilo de chat de PQR (HiloPQR.jsx) y tarjetas del
+   tablero Kanban de PQR (GestionPQR.jsx). */
+@keyframes slideInRight {
+  from {
+    transform: translateX(100%);
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+@keyframes popIn {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* Scroll delgado y con los colores del sitio para el sidebar fijo de los
+   paneles (Admin/Empleado/Cliente, ver PanelLayout.jsx y Perfil.jsx): sin
+   esto, se ve la barra de scroll gris/blanca por defecto del sistema
+   operativo, que desentona con el fondo oscuro. */
+.scroll-panel {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(34, 211, 238, 0.35) transparent;
+}
+
+.scroll-panel::-webkit-scrollbar {
+  width: 6px;
+}
+
+.scroll-panel::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.scroll-panel::-webkit-scrollbar-thumb {
+  background-color: rgba(34, 211, 238, 0.35);
+  border-radius: 999px;
+}
+
+.scroll-panel::-webkit-scrollbar-thumb:hover {
+  background-color: rgba(34, 211, 238, 0.55);
+}
