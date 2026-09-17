@@ -55,7 +55,9 @@ class Settings:
     # Chatbot (Google Gemini)
     # ==========================================
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    # "gemini-2.5-flash" fue retirado por Google para cuentas/API keys nuevas
+    # (responde 404 con un mensaje que recomienda este reemplazo).
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
 
     # ==========================================
     # Servidor
