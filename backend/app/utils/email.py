@@ -2,107 +2,98 @@
 Envío de correo: recuperación de contraseña, factura de una compra y aviso de
 respuesta a una PQR.
 
-Usa smtplib con las credenciales SMTP definidas en .env. Si el SMTP no está
-configurado o falla, ninguna de estas funciones rompe la petición que las
-llama: se registra el error/aviso en consola y el flujo principal (crear el
-pedido, responder la PQR) sigue funcionando igual, para poder probar todo sin
-depender de un servidor de correo real (útil para las evidencias con
-Postman).
+Antes este módulo usaba smtplib (SMTP directo) con las credenciales del
+.env. Se cambió a la API HTTPS de Brevo (antes Sendinblue) porque Railway
+—la plataforma donde corre el backend en producción— bloquea las conexiones
+salientes por los puertos SMTP tradicionales (587 y 465): la conexión se
+queda esperando y termina en timeout, aunque las credenciales estén
+perfectas. Una API HTTPS no tiene ese problema porque usa el mismo puerto
+443 por el que ya funcionan todas las demás peticiones del backend (por
+ejemplo, la del chatbot a Gemini en app/utils/gemini.py).
+
+Si BREVO_API_KEY no está configurada o el envío falla, ninguna de estas
+funciones rompe la petición que las llama: se registra el error/aviso en
+consola y el flujo principal (crear el pedido, responder la PQR) sigue
+funcionando igual, para poder probar todo sin depender de un servidor de
+correo real (útil para las evidencias con Postman).
 
 Los tres correos comparten una misma plantilla visual (_plantilla_correo),
 con la identidad del sitio (logo circular + degradado cian/azul, fondo
 oscuro) en vez de HTML suelto repetido en cada función. El logo se manda
-como imagen incrustada (Content-ID), no como una URL externa, porque el
-sitio corre en local durante el desarrollo y una URL a localhost no cargaría
-en el cliente de correo de quien lo reciba.
+incrustado como imagen en base64 (data URI) directamente en el HTML, en vez
+de como adjunto con Content-ID: la API de Brevo recibe el correo ya armado
+como JSON (asunto + HTML + adjuntos), no como un mensaje MIME de varias
+partes, así que un data URI es la forma más simple y confiable de que el
+logo se vea sin depender de una URL pública.
 """
 
-import smtplib
-import socket
-from email.mime.application import MIMEApplication
-from email.mime.image import MIMEImage
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
+import base64
+from email.utils import parseaddr
 from html import escape as escapar_html
 from pathlib import Path
 
+import httpx
+
 from app.core.config import settings
+
+BREVO_URL = "https://api.brevo.com/v3/smtp/email"
 
 # Versión circular y con fondo transparente del logo (ver app/assets/logo.png,
 # usado también en el membrete de los PDF), pensada para verse bien sobre el
 # fondo oscuro del encabezado del correo en vez del fondo blanco original.
 RUTA_LOGO_CORREO = Path(__file__).resolve().parent.parent / "assets" / "logo_correo.png"
-LOGO_CID = "logo_jrtech"
 
 
-def _construir_mensaje(
+def _logo_data_uri() -> str:
+    """Lee el logo una sola vez (al importar el módulo) y lo deja listo como
+    data URI en base64, para incrustarlo directamente en el <img src=...>
+    de cada correo sin depender de un archivo ni una URL externa."""
+    if not RUTA_LOGO_CORREO.exists():
+        return ""
+    contenido = RUTA_LOGO_CORREO.read_bytes()
+    return f"data:image/png;base64,{base64.b64encode(contenido).decode('ascii')}"
+
+
+LOGO_DATA_URI = _logo_data_uri()
+
+
+def _enviar_via_brevo(
     destinatario: str,
     asunto: str,
     texto_plano: str,
     html: str,
     adjuntos: list[tuple[str, bytes, str]] | None = None,
-) -> MIMEMultipart:
-    """Arma el correo completo: texto plano + HTML (alternative), el logo
-    incrustado como imagen en línea (related) y, si se pasan, adjuntos
-    aparte como la factura en PDF (mixed)."""
-    mensaje = MIMEMultipart("mixed")
-    mensaje["Subject"] = asunto
-    mensaje["From"] = settings.EMAIL_FROM
-    mensaje["To"] = destinatario
+    timeout: int = 15,
+) -> None:
+    """Envía un correo a través de la API HTTPS de Brevo (POST con JSON),
+    en vez de abrir una conexión SMTP directa."""
+    nombre_remitente, correo_remitente = parseaddr(settings.EMAIL_FROM)
 
-    relacionado = MIMEMultipart("related")
+    payload = {
+        "sender": {"name": nombre_remitente or "JR TECH", "email": correo_remitente},
+        "to": [{"email": destinatario}],
+        "subject": asunto,
+        "htmlContent": html,
+        "textContent": texto_plano,
+    }
 
-    alternativo = MIMEMultipart("alternative")
-    alternativo.attach(MIMEText(texto_plano, "plain"))
-    alternativo.attach(MIMEText(html, "html"))
-    relacionado.attach(alternativo)
+    if adjuntos:
+        payload["attachment"] = [
+            {"name": nombre_archivo, "content": base64.b64encode(contenido).decode("ascii")}
+            for nombre_archivo, contenido, _subtipo in adjuntos
+        ]
 
-    if RUTA_LOGO_CORREO.exists():
-        with open(RUTA_LOGO_CORREO, "rb") as archivo_logo:
-            imagen_logo = MIMEImage(archivo_logo.read(), _subtype="png")
-        imagen_logo.add_header("Content-ID", f"<{LOGO_CID}>")
-        imagen_logo.add_header("Content-Disposition", "inline", filename="logo.png")
-        relacionado.attach(imagen_logo)
-
-    mensaje.attach(relacionado)
-
-    for nombre_archivo, contenido, subtipo in adjuntos or []:
-        adjunto = MIMEApplication(contenido, _subtype=subtipo)
-        adjunto.add_header("Content-Disposition", "attachment", filename=nombre_archivo)
-        mensaje.attach(adjunto)
-
-    return mensaje
-
-
-def _conectar_smtp_ipv4(host: str, port: int, timeout: int, seguro: bool) -> smtplib.SMTP:
-    """Conecta al servidor SMTP forzando resolución IPv4.
-
-    Algunas plataformas de hosting (Railway incluida) no tienen salida a
-    internet por IPv6, pero servidores como smtp.gmail.com publican tanto un
-    registro A (IPv4) como uno AAAA (IPv6). Si dejamos que smtplib resuelva el
-    host normalmente, a veces elige la dirección IPv6 y la conexión falla con
-    "Network is unreachable" aunque las credenciales estén perfectas.
-    Resolviendo nosotros mismos solo la dirección IPv4 evitamos ese problema.
-
-    `seguro=True` usa SSL implícito (el que normalmente va en el puerto 465)
-    en vez de STARTTLS (puerto 587). Se controla con la variable de entorno
-    SMTP_SECURE — sirve para probar el puerto 465 si el 587 queda bloqueado
-    o "colgado" (timeout) en la plataforma donde corre el backend.
-    """
-    direccion_ipv4 = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
-    servidor = smtplib.SMTP_SSL(timeout=timeout) if seguro else smtplib.SMTP(timeout=timeout)
-    servidor.connect(direccion_ipv4[0], direccion_ipv4[1])
-    return servidor
-
-
-def _enviar(mensaje: MIMEMultipart, destinatario: str, timeout: int = 15) -> None:
-    with _conectar_smtp_ipv4(
-        settings.SMTP_HOST, settings.SMTP_PORT, timeout, settings.SMTP_SECURE
-    ) as server:
-        if not settings.SMTP_SECURE:
-            server.starttls()
-        server.login(settings.SMTP_USER, settings.SMTP_PASS)
-        server.sendmail(settings.SMTP_USER, [destinatario], mensaje.as_string())
+    respuesta = httpx.post(
+        BREVO_URL,
+        headers={
+            "api-key": settings.BREVO_API_KEY,
+            "Content-Type": "application/json",
+            "accept": "application/json",
+        },
+        json=payload,
+        timeout=timeout,
+    )
+    respuesta.raise_for_status()
 
 
 def _plantilla_correo(
@@ -121,9 +112,9 @@ def _plantilla_correo(
     forma confiable en clientes de correo como Gmail u Outlook."""
 
     logo_html = (
-        f'<img src="cid:{LOGO_CID}" width="52" height="52" alt="JR TECH" '
+        f'<img src="{LOGO_DATA_URI}" width="52" height="52" alt="JR TECH" '
         f'style="display:block;border-radius:50%;">'
-        if RUTA_LOGO_CORREO.exists()
+        if LOGO_DATA_URI
         else ""
     )
 
@@ -228,8 +219,8 @@ def enviar_correo_recuperacion(destinatario: str, nombre: str, token: str) -> No
     print(enlace)
     print("=================================")
 
-    if not settings.SMTP_HOST or not settings.SMTP_USER or not settings.SMTP_PASS:
-        print("SMTP no configurado en .env: solo se generó el enlace anterior.")
+    if not settings.BREVO_API_KEY:
+        print("BREVO_API_KEY no configurada: solo se generó el enlace anterior.")
         return
 
     texto_plano = (
@@ -252,10 +243,9 @@ def enviar_correo_recuperacion(destinatario: str, nombre: str, token: str) -> No
         </p>"""
 
     html = _plantilla_correo("🔑", "#22d3ee", "Restablece tu contraseña", cuerpo_html, "Restablecer contraseña", enlace)
-    mensaje = _construir_mensaje(destinatario, "Recupera tu contraseña - JR TECH", texto_plano, html)
 
     try:
-        _enviar(mensaje, destinatario, timeout=10)
+        _enviar_via_brevo(destinatario, "Recupera tu contraseña - JR TECH", texto_plano, html, timeout=10)
         print(f"Correo de recuperación enviado a {destinatario}")
     except Exception as error:
         print(f"No se pudo enviar el correo de recuperación: {error}")
@@ -265,15 +255,15 @@ def enviar_correo_factura(destinatario: str, nombre: str, factura: dict, pdf_byt
     """Envía la factura de una compra recién realizada con el PDF adjunto.
     La factura sigue disponible para descargar desde el perfil del cliente
     en cualquier momento (GET /api/facturas/{id}/pdf); este correo es un
-    canal adicional, no el único — si el SMTP no está configurado o falla,
+    canal adicional, no el único — si Brevo no está configurado o falla,
     la compra ya quedó registrada de todas formas."""
     numero = factura.get("numero") or "—"
     total = float(factura.get("total") or 0)
 
     print(f"Enviando factura {numero} por correo a {destinatario}...")
 
-    if not settings.SMTP_HOST or not settings.SMTP_USER or not settings.SMTP_PASS:
-        print("SMTP no configurado en .env: la factura no se envió por correo (sigue disponible para descargar desde el perfil).")
+    if not settings.BREVO_API_KEY:
+        print("BREVO_API_KEY no configurada: la factura no se envió por correo (sigue disponible para descargar desde el perfil).")
         return
 
     enlace_perfil = f"{settings.FRONTEND_URL}/perfil"
@@ -311,16 +301,16 @@ def enviar_correo_factura(destinatario: str, nombre: str, factura: dict, pdf_byt
         </p>"""
 
     html = _plantilla_correo("🧾", "#34d399", "¡Compra confirmada!", cuerpo_html, "Ver mis facturas", enlace_perfil)
-    mensaje = _construir_mensaje(
-        destinatario,
-        f"Tu factura {numero} - JR TECH",
-        texto_plano,
-        html,
-        adjuntos=[(f"factura_{numero}.pdf", pdf_bytes, "pdf")],
-    )
 
     try:
-        _enviar(mensaje, destinatario, timeout=15)
+        _enviar_via_brevo(
+            destinatario,
+            f"Tu factura {numero} - JR TECH",
+            texto_plano,
+            html,
+            adjuntos=[(f"factura_{numero}.pdf", pdf_bytes, "pdf")],
+            timeout=15,
+        )
         print(f"Factura {numero} enviada por correo a {destinatario}")
     except Exception as error:
         print(f"No se pudo enviar la factura por correo: {error}")
@@ -330,8 +320,8 @@ def enviar_correo_respuesta_pqr(destinatario: str, nombre: str, asunto_pqr: str,
     """Avisa al cliente que su PQR recibió una respuesta nueva del equipo."""
     print(f"Notificando respuesta de PQR a {destinatario}...")
 
-    if not settings.SMTP_HOST or not settings.SMTP_USER or not settings.SMTP_PASS:
-        print("SMTP no configurado en .env: no se pudo notificar la respuesta de la PQR por correo.")
+    if not settings.BREVO_API_KEY:
+        print("BREVO_API_KEY no configurada: no se pudo notificar la respuesta de la PQR por correo.")
         return
 
     enlace = f"{settings.FRONTEND_URL}/perfil"
@@ -366,10 +356,15 @@ def enviar_correo_respuesta_pqr(destinatario: str, nombre: str, asunto_pqr: str,
         </table>"""
 
     html = _plantilla_correo("💬", "#a78bfa", "Tu PQR tiene respuesta", cuerpo_html, "Ver la conversación completa", enlace)
-    mensaje = _construir_mensaje(destinatario, f"Respondimos tu PQR: {asunto_pqr} - JR TECH", texto_plano, html)
 
     try:
-        _enviar(mensaje, destinatario, timeout=10)
+        _enviar_via_brevo(
+            destinatario,
+            f"Respondimos tu PQR: {asunto_pqr} - JR TECH",
+            texto_plano,
+            html,
+            timeout=10,
+        )
         print(f"Notificación de respuesta de PQR enviada a {destinatario}")
     except Exception as error:
         print(f"No se pudo enviar la notificación de PQR por correo: {error}")

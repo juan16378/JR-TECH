@@ -34,14 +34,22 @@ class Settings:
     ADMIN_PASSWORD: str = os.getenv("ADMIN_PASSWORD", "")
 
     # ==========================================
-    # Envío de correo (recuperación de contraseña)
+    # Envío de correo (recuperación de contraseña, facturas, PQR)
     # ==========================================
+    # SMTP_* se dejan de usar para enviar (Railway bloquea los puertos SMTP
+    # salientes 587/465), pero se conservan por compatibilidad si alguna vez
+    # se corre el backend en un entorno que sí permita SMTP directo.
     SMTP_HOST: str = os.getenv("SMTP_HOST", "")
     SMTP_PORT: int = int(os.getenv("SMTP_PORT", "587"))
     SMTP_SECURE: bool = os.getenv("SMTP_SECURE", "false").lower() == "true"
     SMTP_USER: str = os.getenv("SMTP_USER", "")
     SMTP_PASS: str = os.getenv("SMTP_PASS", "")
     EMAIL_FROM: str = os.getenv("EMAIL_FROM", "JR TECH <no-reply@jrtech.com>")
+
+    # Envío real de correo: API HTTPS de Brevo (antes Sendinblue). El correo
+    # de "sender" en Brevo debe ser un remitente verificado en esa cuenta —
+    # normalmente se usa el mismo correo con el que te registraste ahí.
+    BREVO_API_KEY: str = os.getenv("BREVO_API_KEY", "")
 
     # ==========================================
     # Chatbot (Google Gemini)
