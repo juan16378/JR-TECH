@@ -18,6 +18,7 @@ en el cliente de correo de quien lo reciba.
 """
 
 import smtplib
+import socket
 from email.mime.application import MIMEApplication
 from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
@@ -73,8 +74,24 @@ def _construir_mensaje(
     return mensaje
 
 
+def _conectar_smtp_ipv4(host: str, port: int, timeout: int) -> smtplib.SMTP:
+    """Conecta al servidor SMTP forzando resolución IPv4.
+
+    Algunas plataformas de hosting (Railway incluida) no tienen salida a
+    internet por IPv6, pero servidores como smtp.gmail.com publican tanto un
+    registro A (IPv4) como uno AAAA (IPv6). Si dejamos que smtplib resuelva el
+    host normalmente, a veces elige la dirección IPv6 y la conexión falla con
+    "Network is unreachable" aunque las credenciales estén perfectas.
+    Resolviendo nosotros mismos solo la dirección IPv4 evitamos ese problema.
+    """
+    direccion_ipv4 = socket.getaddrinfo(host, port, socket.AF_INET, socket.SOCK_STREAM)[0][4]
+    servidor = smtplib.SMTP(timeout=timeout)
+    servidor.connect(direccion_ipv4[0], direccion_ipv4[1])
+    return servidor
+
+
 def _enviar(mensaje: MIMEMultipart, destinatario: str, timeout: int = 15) -> None:
-    with smtplib.SMTP(settings.SMTP_HOST, settings.SMTP_PORT, timeout=timeout) as server:
+    with _conectar_smtp_ipv4(settings.SMTP_HOST, settings.SMTP_PORT, timeout) as server:
         server.starttls()
         server.login(settings.SMTP_USER, settings.SMTP_PASS)
         server.sendmail(settings.SMTP_USER, [destinatario], mensaje.as_string())
