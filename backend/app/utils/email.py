@@ -20,11 +20,10 @@ correo real (útil para las evidencias con Postman).
 Los tres correos comparten una misma plantilla visual (_plantilla_correo),
 con la identidad del sitio (logo circular + degradado cian/azul, fondo
 oscuro) en vez de HTML suelto repetido en cada función. El logo se manda
-incrustado como imagen en base64 (data URI) directamente en el HTML, en vez
-de como adjunto con Content-ID: la API de Brevo recibe el correo ya armado
-como JSON (asunto + HTML + adjuntos), no como un mensaje MIME de varias
-partes, así que un data URI es la forma más simple y confiable de que el
-logo se vea sin depender de una URL pública.
+como adjunto normal referenciado por "cid" en el HTML (igual que se hacía
+con SMTP), no incrustado como base64 dentro del propio HTML: hacerlo así
+infla mucho el tamaño del mensaje y clientes como Gmail lo recortan
+("[Mensaje recortado]") cuando pasa cierto tamaño.
 """
 
 import base64
@@ -42,19 +41,19 @@ BREVO_URL = "https://api.brevo.com/v3/smtp/email"
 # usado también en el membrete de los PDF), pensada para verse bien sobre el
 # fondo oscuro del encabezado del correo en vez del fondo blanco original.
 RUTA_LOGO_CORREO = Path(__file__).resolve().parent.parent / "assets" / "logo_correo.png"
+LOGO_CID = "logo_jrtech.png"
 
 
-def _logo_data_uri() -> str:
-    """Lee el logo una sola vez (al importar el módulo) y lo deja listo como
-    data URI en base64, para incrustarlo directamente en el <img src=...>
-    de cada correo sin depender de un archivo ni una URL externa."""
+def _logo_adjunto() -> dict | None:
+    """Lee el logo del disco y lo deja listo como adjunto en base64 para la
+    API de Brevo. Se referencia desde el HTML como `cid:logo_jrtech.png`
+    (ver _plantilla_correo) — Brevo lo reconoce como imagen incrustada en
+    vez de un archivo adjunto visible porque el nombre coincide con el cid
+    usado en el <img src="cid:...">."""
     if not RUTA_LOGO_CORREO.exists():
-        return ""
+        return None
     contenido = RUTA_LOGO_CORREO.read_bytes()
-    return f"data:image/png;base64,{base64.b64encode(contenido).decode('ascii')}"
-
-
-LOGO_DATA_URI = _logo_data_uri()
+    return {"name": LOGO_CID, "content": base64.b64encode(contenido).decode("ascii")}
 
 
 def _enviar_via_brevo(
@@ -77,11 +76,17 @@ def _enviar_via_brevo(
         "textContent": texto_plano,
     }
 
+    lista_adjuntos = []
+    logo = _logo_adjunto()
+    if logo:
+        lista_adjuntos.append(logo)
     if adjuntos:
-        payload["attachment"] = [
+        lista_adjuntos.extend(
             {"name": nombre_archivo, "content": base64.b64encode(contenido).decode("ascii")}
             for nombre_archivo, contenido, _subtipo in adjuntos
-        ]
+        )
+    if lista_adjuntos:
+        payload["attachment"] = lista_adjuntos
 
     respuesta = httpx.post(
         BREVO_URL,
@@ -112,9 +117,9 @@ def _plantilla_correo(
     forma confiable en clientes de correo como Gmail u Outlook."""
 
     logo_html = (
-        f'<img src="{LOGO_DATA_URI}" width="52" height="52" alt="JR TECH" '
+        f'<img src="cid:{LOGO_CID}" width="52" height="52" alt="JR TECH" '
         f'style="display:block;border-radius:50%;">'
-        if LOGO_DATA_URI
+        if RUTA_LOGO_CORREO.exists()
         else ""
     )
 
